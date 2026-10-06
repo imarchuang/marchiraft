@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 )
@@ -15,36 +16,46 @@ const (
 	RoleLeader   = "leader"
 )
 
-// Config is process identity and listen address (peers unused in slice 0).
+// Config is process identity, listen address, and durable data dir.
 type Config struct {
-	ID     string
-	Listen string
-	Peers  map[string]string // id -> host:port
+	ID      string
+	Listen  string
+	DataDir string
+	Peers   map[string]string // id -> host:port
 }
 
-// Node is one replica. Slice 0: in-memory map, no consensus.
+// Node is one replica. Slice 1: local log + term, replay on open.
 type Node struct {
 	cfg Config
 
 	mu          sync.Mutex
 	kv          map[string]string
+	log         []LogEntry
+	logFile     *os.File
 	term        int
+	votedFor    string
 	role        string
 	commitIndex int
+	lastApplied int
 }
 
-func New(cfg Config) *Node {
+// Open creates or replays a node from dataDir (meta.json + log jsonl).
+func Open(cfg Config) (*Node, error) {
 	if cfg.ID == "" {
 		cfg.ID = "n1"
 	}
 	if cfg.Peers == nil {
 		cfg.Peers = map[string]string{}
 	}
-	return &Node{
+	n := &Node{
 		cfg:  cfg,
 		kv:   make(map[string]string),
 		role: RoleLeader, // single node; clustering comes later
 	}
+	if err := n.openStore(); err != nil {
+		return nil, err
+	}
+	return n, nil
 }
 
 func (n *Node) ID() string { return n.cfg.ID }
@@ -101,9 +112,10 @@ func (n *Node) putKV(w http.ResponseWriter, r *http.Request, key string) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	n.mu.Lock()
-	n.kv[key] = string(body)
-	n.mu.Unlock()
+	if err := n.appendAndApply(key, string(body)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": key})
 }
 

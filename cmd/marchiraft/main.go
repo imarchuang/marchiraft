@@ -14,16 +14,20 @@ func main() {
 	id := flag.String("id", envOr("MARCHIRAFT_ID", "n1"), "node id")
 	listen := flag.String("listen", envOr("MARCHIRAFT_LISTEN", ":7001"), "listen address")
 	peers := flag.String("peers", envOr("MARCHIRAFT_PEERS", ""), "id=host:port,... (unused until clustering)")
-	dataDir := flag.String("dataDir", envOr("MARCHIRAFT_DATA", "/data"), "data directory (unused in slice 0)")
+	dataDir := flag.String("dataDir", envOr("MARCHIRAFT_DATA", "/data"), "data directory (meta.json + log)")
 	flag.Parse()
-	_ = dataDir
 
-	n := node.New(node.Config{
-		ID:     *id,
-		Listen: *listen,
-		Peers:  parsePeers(*peers),
+	n, err := node.Open(node.Config{
+		ID:      *id,
+		Listen:  *listen,
+		DataDir: *dataDir,
+		Peers:   parsePeers(*peers),
 	})
-	log.Printf("marchiraft id=%s listen=%s (in-memory KV, no Raft yet)", *id, *listen)
+	if err != nil {
+		log.Fatalf("open: %v", err)
+	}
+	defer n.Close()
+	log.Printf("marchiraft id=%s listen=%s dataDir=%s (local log + term, no peers yet)", *id, *listen, *dataDir)
 	if err := http.ListenAndServe(*listen, n.Handler()); err != nil {
 		log.Fatal(err)
 	}

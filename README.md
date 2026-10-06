@@ -30,5 +30,5 @@ curl -X PUT http://127.0.0.1:7001/kv/user -d alice
 curl -s http://127.0.0.1:7001/kv/user
 ```
 
-Slice 0 is a single-node in-memory map (no consensus yet). Clustering starts
-in later slices — see PLAN.md.
+Slice 1 persists `{dataDir}/meta.json` (term) and `{dataDir}/log/000001.jsonl`
+and replays them on restart. Clustering starts in later slices — see PLAN.md.
