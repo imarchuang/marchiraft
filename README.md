@@ -30,5 +30,6 @@ curl -X PUT http://127.0.0.1:7001/kv/user -d alice
 curl -s http://127.0.0.1:7001/kv/user
 ```
 
-Slice 1 persists `{dataDir}/meta.json` (term) and `{dataDir}/log/000001.jsonl`
-and replays them on restart. Clustering starts in later slices — see PLAN.md.
+Slice 2 elects a leader among configured peers (`POST /raft/vote`). Two of three
+nodes are a majority. Writes still apply only on the leader; log replication
+is the next slice — see PLAN.md.

@@ -54,6 +54,10 @@ func (n *Node) openStore() error {
 }
 
 func (n *Node) Close() error {
+	n.stopOnce.Do(func() {
+		close(n.stop)
+	})
+	n.wg.Wait()
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.logFile != nil {

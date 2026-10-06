@@ -13,7 +13,7 @@ import (
 func main() {
 	id := flag.String("id", envOr("MARCHIRAFT_ID", "n1"), "node id")
 	listen := flag.String("listen", envOr("MARCHIRAFT_LISTEN", ":7001"), "listen address")
-	peers := flag.String("peers", envOr("MARCHIRAFT_PEERS", ""), "id=host:port,... (unused until clustering)")
+	peers := flag.String("peers", envOr("MARCHIRAFT_PEERS", ""), "id=host:port,... (include self)")
 	dataDir := flag.String("dataDir", envOr("MARCHIRAFT_DATA", "/data"), "data directory (meta.json + log)")
 	flag.Parse()
 
@@ -27,7 +27,8 @@ func main() {
 		log.Fatalf("open: %v", err)
 	}
 	defer n.Close()
-	log.Printf("marchiraft id=%s listen=%s dataDir=%s (local log + term, no peers yet)", *id, *listen, *dataDir)
+	n.Start()
+	log.Printf("marchiraft id=%s listen=%s dataDir=%s peers=%d", *id, *listen, *dataDir, len(parsePeers(*peers)))
 	if err := http.ListenAndServe(*listen, n.Handler()); err != nil {
 		log.Fatal(err)
 	}
