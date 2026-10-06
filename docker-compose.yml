@@ -1,0 +1,54 @@
+services:
+  n1:
+    build: .
+    image: marchiraft:local
+    ports:
+      - "7001:7001"
+    volumes:
+      - n1-data:/data
+    environment:
+      MARCHIRAFT_ID: n1
+      MARCHIRAFT_LISTEN: ":7001"
+      MARCHIRAFT_PEERS: n1=n1:7001,n2=n2:7002,n3=n3:7003
+    command: ["-id=n1", "-listen=:7001", "-peers=n1=n1:7001,n2=n2:7002,n3=n3:7003", "-dataDir=/data"]
+  n2:
+    build: .
+    image: marchiraft:local
+    ports:
+      - "7002:7002"
+    volumes:
+      - n2-data:/data
+    environment:
+      MARCHIRAFT_ID: n2
+      MARCHIRAFT_LISTEN: ":7002"
+      MARCHIRAFT_PEERS: n1=n1:7001,n2=n2:7002,n3=n3:7003
+    command: ["-id=n2", "-listen=:7002", "-peers=n1=n1:7001,n2=n2:7002,n3=n3:7003", "-dataDir=/data"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7002/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
+  n3:
+    build: .
+    image: marchiraft:local
+    ports:
+      - "7003:7003"
+    volumes:
+      - n3-data:/data
+    environment:
+      MARCHIRAFT_ID: n3
+      MARCHIRAFT_LISTEN: ":7003"
+      MARCHIRAFT_PEERS: n1=n1:7001,n2=n2:7002,n3=n3:7003
+    command: ["-id=n3", "-listen=:7003", "-peers=n1=n1:7001,n2=n2:7002,n3=n3:7003", "-dataDir=/data"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7003/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
+
+volumes:
+  n1-data:
+  n2-data:
+  n3-data:
