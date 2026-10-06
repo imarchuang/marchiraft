@@ -10,6 +10,7 @@ import (
 
 const (
 	cmdSet     = "SET"
+	cmdNoop    = "NOOP"
 	logFileRel = "log/000001.jsonl"
 	metaRel    = "meta.json"
 )
