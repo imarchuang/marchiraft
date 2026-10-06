@@ -36,22 +36,24 @@ func TestFailoverCommittedKeysSurvive(t *testing.T) {
 			break
 		}
 	}
-	got, err := http.Get("http://" + c.addrs[follower.ID()] + "/kv/user")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer got.Body.Close()
-	if got.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(got.Body)
-		t.Fatalf("GET after failover %d %s", got.StatusCode, b)
-	}
+	deadline := time.Now().Add(3 * time.Second)
 	var kv map[string]any
-	if err := json.NewDecoder(got.Body).Decode(&kv); err != nil {
-		t.Fatal(err)
+	for time.Now().Before(deadline) {
+		got, err := http.Get("http://" + c.addrs[follower.ID()] + "/kv/user")
+		if err != nil {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		body, _ := io.ReadAll(got.Body)
+		got.Body.Close()
+		if got.StatusCode == http.StatusOK {
+			if err := json.Unmarshal(body, &kv); err == nil && kv["value"] == "alice" {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if kv["value"] != "alice" {
-		t.Fatalf("committed key lost: %#v", kv)
-	}
+	t.Fatalf("committed key missing after failover, last=%#v", kv)
 }
 
 func TestUncommittedTailOverwritten(t *testing.T) {
@@ -80,8 +82,12 @@ func TestUncommittedTailOverwritten(t *testing.T) {
 	if resp.StatusCode == http.StatusOK {
 		t.Fatalf("uncommitted PUT should not succeed, body=%s", b)
 	}
-	if old.LastIndex() < 2 || old.CommitIndex() >= 2 {
-		t.Fatalf("want uncommitted index 2, last=%d commit=%d", old.LastIndex(), old.CommitIndex())
+	if old.LastIndex() <= old.CommitIndex() {
+		t.Fatalf("want uncommitted tail, last=%d commit=%d", old.LastIndex(), old.CommitIndex())
+	}
+	oldLog, err := os.ReadFile(filepath.Join(c.dirs[old.ID()], "log", "000001.jsonl"))
+	if err != nil || !strings.Contains(string(oldLog), `"value":"bob"`) {
+		t.Fatalf("old leader should have uncommitted bob: %s", oldLog)
 	}
 	oldID := old.ID()
 	c.stopID(oldID)

@@ -108,6 +108,7 @@ func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", n.handleHealthz)
 	mux.HandleFunc("/kv/", n.handleKV)
+	mux.HandleFunc("/raft/status", n.handleStatus)
 	mux.HandleFunc("/raft/vote", n.handleVote)
 	mux.HandleFunc("/raft/append", n.handleAppend)
 	return mux
@@ -124,6 +125,33 @@ func (n *Node) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 		"leader":      n.leaderID,
 		"commitIndex": n.commitIndex,
 	})
+}
+
+func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	last := n.log[len(n.log)-1]
+	st := map[string]any{
+		"id":          n.cfg.ID,
+		"role":        n.role,
+		"term":        n.term,
+		"votedFor":    n.votedFor,
+		"leader":      n.leaderID,
+		"commitIndex": n.commitIndex,
+		"lastApplied": n.lastApplied,
+		"logLength":   last.Index,
+		"lastLogTerm": last.Term,
+		"peers":       n.cfg.Peers,
+	}
+	if n.role == RoleLeader {
+		st["nextIndex"] = copyIntMap(n.nextIndex)
+		st["matchIndex"] = copyIntMap(n.matchIndex)
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 func (n *Node) handleKV(w http.ResponseWriter, r *http.Request) {

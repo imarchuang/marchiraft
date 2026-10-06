@@ -99,14 +99,23 @@ func (n *Node) becomeFollowerLocked(term int) {
 	n.leaderID = ""
 	_ = n.persistMetaLocked()
 	n.resetElectionLocked()
+	log.Printf("%s stepped down to follower term=%d", n.cfg.ID, n.term)
 }
 
 func (n *Node) becomeLeaderLocked() {
 	n.role = RoleLeader
 	n.leaderID = n.cfg.ID
-	n.nextHeartbeat = time.Now()
 	n.initLeaderStateLocked()
-	log.Printf("%s became leader term=%d", n.cfg.ID, n.term)
+	idx := n.log[len(n.log)-1].Index + 1
+	e := LogEntry{Index: idx, Term: n.term, Type: cmdNoop}
+	if err := n.fsyncAppendLocked(e); err != nil {
+		log.Printf("%s noop append: %v", n.cfg.ID, err)
+	} else {
+		n.log = append(n.log, e)
+		n.matchIndex[n.cfg.ID] = idx
+	}
+	n.nextHeartbeat = time.Now()
+	log.Printf("%s became leader term=%d last=%d", n.cfg.ID, n.term, n.log[len(n.log)-1].Index)
 }
 
 func (n *Node) initLeaderStateLocked() {
@@ -357,6 +366,7 @@ func (n *Node) maybeCommitLocked() {
 		if count >= n.majorityLocked() {
 			n.commitIndex = idx
 			n.applyCommittedLocked()
+			log.Printf("%s committed index=%d term=%d", n.cfg.ID, n.commitIndex, n.term)
 			return
 		}
 	}
@@ -399,6 +409,14 @@ func (n *Node) Propose(key, value string) error {
 
 func copyStringMap(m map[string]string) map[string]string {
 	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func copyIntMap(m map[string]int) map[string]int {
+	out := make(map[string]int, len(m))
 	for k, v := range m {
 		out[k] = v
 	}

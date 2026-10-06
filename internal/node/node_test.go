@@ -67,6 +67,19 @@ func TestPutGetHealthz(t *testing.T) {
 	if !strings.Contains(string(body), `"role"`) {
 		t.Fatalf("healthz missing role: %s", body)
 	}
+
+	st, err := http.Get(srv.URL + "/raft/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Body.Close()
+	sb, _ := io.ReadAll(st.Body)
+	if st.StatusCode != http.StatusOK {
+		t.Fatalf("status %d %s", st.StatusCode, sb)
+	}
+	if !strings.Contains(string(sb), `"logLength"`) {
+		t.Fatalf("raft/status missing logLength: %s", sb)
+	}
 }
 
 func TestGetMissing(t *testing.T) {
