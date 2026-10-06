@@ -143,15 +143,106 @@ func (n *Node) replayLog() error {
 func (n *Node) appendAndApply(key, value string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	e, err := n.appendLocked(key, value)
+	if err != nil {
+		return err
+	}
+	n.commitIndex = e.Index
+	n.applyCommittedLocked()
+	return nil
+}
+
+func (n *Node) appendLocked(key, value string) (LogEntry, error) {
 	idx := n.log[len(n.log)-1].Index + 1
 	e := LogEntry{Index: idx, Term: n.term, Type: cmdSet, Key: key, Value: value}
 	if err := n.fsyncAppendLocked(e); err != nil {
-		return err
+		return LogEntry{}, err
 	}
 	n.log = append(n.log, e)
-	n.kv[key] = value
-	n.commitIndex = idx
-	n.lastApplied = idx
+	return e, nil
+}
+
+func (n *Node) applyCommittedLocked() {
+	for n.lastApplied < n.commitIndex {
+		n.lastApplied++
+		e := n.log[n.lastApplied]
+		if e.Type == cmdSet {
+			n.kv[e.Key] = e.Value
+		}
+	}
+}
+
+func (n *Node) truncateFromLocked(index int) error {
+	if index < 1 {
+		index = 1
+	}
+	if index >= len(n.log) {
+		return nil
+	}
+	n.log = n.log[:index]
+	if n.commitIndex > n.log[len(n.log)-1].Index {
+		n.commitIndex = n.log[len(n.log)-1].Index
+	}
+	if n.lastApplied > n.commitIndex {
+		n.lastApplied = n.commitIndex
+	}
+	n.rebuildKVLocked()
+	return n.rewriteLogLocked()
+}
+
+func (n *Node) rebuildKVLocked() {
+	n.kv = make(map[string]string)
+	for i := 1; i <= n.lastApplied && i < len(n.log); i++ {
+		e := n.log[i]
+		if e.Type == cmdSet {
+			n.kv[e.Key] = e.Value
+		}
+	}
+}
+
+func (n *Node) rewriteLogLocked() error {
+	if n.logFile != nil {
+		_ = n.logFile.Close()
+		n.logFile = nil
+	}
+	path := n.logPath()
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	for _, e := range n.log[1:] {
+		b, err := json.Marshal(e)
+		if err != nil {
+			f.Close()
+			return err
+		}
+		if _, err := f.Write(append(b, '\n')); err != nil {
+			f.Close()
+			return err
+		}
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	_ = dir.Sync()
+	dir.Close()
+	lf, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	n.logFile = lf
 	return nil
 }
 

@@ -31,5 +31,5 @@ curl -s http://127.0.0.1:7001/kv/user
 ```
 
 Slice 2 elects a leader among configured peers (`POST /raft/vote`). Two of three
-nodes are a majority. Writes still apply only on the leader; log replication
-is the next slice — see PLAN.md.
+nodes are a majority. Writes wait for a majority `AppendEntries` before 200; one down follower still
+commits. See PLAN.md.

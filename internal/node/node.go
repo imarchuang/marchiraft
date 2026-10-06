@@ -45,6 +45,8 @@ type Node struct {
 	lastApplied   int
 	nextElection  time.Time
 	nextHeartbeat time.Time
+	nextIndex     map[string]int
+	matchIndex    map[string]int
 	stop          chan struct{}
 	wg            sync.WaitGroup
 	started       bool
@@ -72,6 +74,7 @@ func Open(cfg Config) (*Node, error) {
 	if n.voterCountLocked() == 1 {
 		n.role = RoleLeader
 		n.leaderID = n.cfg.ID
+		n.initLeaderStateLocked()
 	}
 	n.mu.Unlock()
 	return n, nil
@@ -83,6 +86,22 @@ func (n *Node) Role() string {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.role
+}
+
+func (n *Node) LastIndex() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.log[len(n.log)-1].Index
+}
+
+func (n *Node) CommitIndex() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.commitIndex
+}
+
+func (n *Node) AddrOf(id string) string {
+	return n.cfg.Peers[id]
 }
 
 func (n *Node) Handler() http.Handler {
@@ -148,8 +167,8 @@ func (n *Node) putKV(w http.ResponseWriter, r *http.Request, key string) {
 		return
 	}
 	n.mu.Unlock()
-	if err := n.appendAndApply(key, string(body)); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := n.Propose(key, string(body)); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": key})
