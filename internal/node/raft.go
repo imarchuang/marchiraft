@@ -1,6 +1,7 @@
 package node
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -104,7 +105,19 @@ func (n *Node) becomeLeaderLocked() {
 	n.role = RoleLeader
 	n.leaderID = n.cfg.ID
 	n.nextHeartbeat = time.Now()
+	n.initLeaderStateLocked()
 	log.Printf("%s became leader term=%d", n.cfg.ID, n.term)
+}
+
+func (n *Node) initLeaderStateLocked() {
+	last := n.log[len(n.log)-1].Index
+	n.nextIndex = make(map[string]int)
+	n.matchIndex = make(map[string]int)
+	for id := range n.cfg.Peers {
+		n.nextIndex[id] = last + 1
+		n.matchIndex[id] = 0
+	}
+	n.matchIndex[n.cfg.ID] = last
 }
 
 func (n *Node) startElection() {
@@ -219,38 +232,169 @@ func (n *Node) onAppendEntries(req AppendRequest) AppendResponse {
 	if n.log[req.PrevLogIndex].Term != req.PrevLogTerm {
 		return AppendResponse{Term: n.term, Success: false}
 	}
+	idx := req.PrevLogIndex
+	for _, e := range req.Entries {
+		idx++
+		if idx < len(n.log) {
+			if n.log[idx].Term != e.Term {
+				if err := n.truncateFromLocked(idx); err != nil {
+					log.Printf("%s truncate: %v", n.cfg.ID, err)
+					return AppendResponse{Term: n.term, Success: false}
+				}
+			} else {
+				continue
+			}
+		}
+		if idx == len(n.log) {
+			if err := n.fsyncAppendLocked(e); err != nil {
+				return AppendResponse{Term: n.term, Success: false}
+			}
+			n.log = append(n.log, e)
+		}
+	}
+	last := n.log[len(n.log)-1].Index
+	if req.LeaderCommit > n.commitIndex {
+		n.commitIndex = req.LeaderCommit
+		if n.commitIndex > last {
+			n.commitIndex = last
+		}
+		n.applyCommittedLocked()
+	}
 	return AppendResponse{Term: n.term, Success: true}
 }
 
 func (n *Node) broadcastHeartbeat() {
+	n.replicateAll()
+}
+
+func (n *Node) replicateAll() {
 	n.mu.Lock()
 	if n.role != RoleLeader {
 		n.mu.Unlock()
 		return
 	}
-	last := n.log[len(n.log)-1]
-	req := AppendRequest{
-		Term:         n.term,
-		LeaderID:     n.cfg.ID,
-		PrevLogIndex: last.Index,
-		PrevLogTerm:  last.Term,
-		LeaderCommit: n.commitIndex,
-	}
 	peers := copyStringMap(n.cfg.Peers)
 	self := n.cfg.ID
 	n.mu.Unlock()
+	var wg sync.WaitGroup
 	for id, addr := range peers {
 		if id == self {
 			continue
 		}
-		go func(addr string) {
-			var resp AppendResponse
-			if err := n.postJSON(addr, "/raft/append", req, &resp); err != nil {
-				return
-			}
-			n.observeTerm(resp.Term)
-		}(addr)
+		wg.Add(1)
+		go func(id, addr string) {
+			defer wg.Done()
+			n.sendAppend(id, addr)
+		}(id, addr)
 	}
+	wg.Wait()
+}
+
+func (n *Node) sendAppend(id, addr string) {
+	n.mu.Lock()
+	if n.role != RoleLeader {
+		n.mu.Unlock()
+		return
+	}
+	next := n.nextIndex[id]
+	if next < 1 {
+		next = 1
+	}
+	if next > len(n.log) {
+		next = len(n.log)
+	}
+	prev := n.log[next-1]
+	entries := []LogEntry{}
+	if next < len(n.log) {
+		entries = append(entries, n.log[next:]...)
+	}
+	req := AppendRequest{
+		Term:         n.term,
+		LeaderID:     n.cfg.ID,
+		PrevLogIndex: prev.Index,
+		PrevLogTerm:  prev.Term,
+		Entries:      entries,
+		LeaderCommit: n.commitIndex,
+	}
+	n.mu.Unlock()
+
+	var resp AppendResponse
+	if err := n.postJSON(addr, "/raft/append", req, &resp); err != nil {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if resp.Term > n.term {
+		n.becomeFollowerLocked(resp.Term)
+		return
+	}
+	if n.role != RoleLeader {
+		return
+	}
+	if resp.Success {
+		n.matchIndex[id] = req.PrevLogIndex + len(entries)
+		n.nextIndex[id] = n.matchIndex[id] + 1
+		n.maybeCommitLocked()
+		return
+	}
+	if n.nextIndex[id] > 1 {
+		n.nextIndex[id]--
+	}
+}
+
+func (n *Node) maybeCommitLocked() {
+	last := n.log[len(n.log)-1].Index
+	for idx := last; idx > n.commitIndex; idx-- {
+		if n.log[idx].Term != n.term {
+			continue
+		}
+		count := 0
+		for _, m := range n.matchIndex {
+			if m >= idx {
+				count++
+			}
+		}
+		if count >= n.majorityLocked() {
+			n.commitIndex = idx
+			n.applyCommittedLocked()
+			return
+		}
+	}
+}
+
+// Propose appends a SET on the leader and waits until it is committed by a majority.
+func (n *Node) Propose(key, value string) error {
+	n.mu.Lock()
+	if n.role != RoleLeader {
+		n.mu.Unlock()
+		return fmt.Errorf("not leader")
+	}
+	e, err := n.appendLocked(key, value)
+	if err != nil {
+		n.mu.Unlock()
+		return err
+	}
+	n.matchIndex[n.cfg.ID] = e.Index
+	n.maybeCommitLocked()
+	idx := e.Index
+	n.mu.Unlock()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		n.mu.Lock()
+		committed := n.commitIndex >= idx
+		leader := n.role == RoleLeader
+		n.mu.Unlock()
+		if !leader {
+			return fmt.Errorf("lost leadership")
+		}
+		if committed {
+			return nil
+		}
+		n.replicateAll()
+		time.Sleep(5 * time.Millisecond)
+	}
+	return fmt.Errorf("commit timeout for index %d", idx)
 }
 
 func copyStringMap(m map[string]string) map[string]string {

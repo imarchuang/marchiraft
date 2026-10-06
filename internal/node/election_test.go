@@ -8,7 +8,19 @@ import (
 	"time"
 )
 
+type raftCluster struct {
+	nodes []*Node
+	addrs map[string]string
+	dirs  map[string]string
+	srvs  map[string]*http.Server
+}
+
 func startCluster(t *testing.T, configured, live int) []*Node {
+	t.Helper()
+	return startRaftCluster(t, configured, live).nodes
+}
+
+func startRaftCluster(t *testing.T, configured, live int) *raftCluster {
 	t.Helper()
 	if live > configured {
 		t.Fatalf("live=%d > configured=%d", live, configured)
@@ -26,11 +38,16 @@ func startCluster(t *testing.T, configured, live int) []*Node {
 		peers[ids[i]] = ln.Addr().String()
 		t.Cleanup(func() { _ = ln.Close() })
 	}
-	nodes := make([]*Node, 0, live)
+	c := &raftCluster{
+		addrs: copyStringMap(peers),
+		dirs:  map[string]string{},
+		srvs:  map[string]*http.Server{},
+	}
 	for i := 0; i < live; i++ {
+		dir := t.TempDir()
 		n, err := Open(Config{
 			ID:                ids[i],
-			DataDir:           t.TempDir(),
+			DataDir:           dir,
 			Peers:             copyStringMap(peers),
 			ElectionTimeout:   40 * time.Millisecond,
 			HeartbeatInterval: 15 * time.Millisecond,
@@ -46,9 +63,11 @@ func startCluster(t *testing.T, configured, live int) []*Node {
 			_ = srv.Close()
 		})
 		n.Start()
-		nodes = append(nodes, n)
+		c.nodes = append(c.nodes, n)
+		c.dirs[n.ID()] = dir
+		c.srvs[n.ID()] = srv
 	}
-	return nodes
+	return c
 }
 
 func waitLeader(t *testing.T, nodes []*Node) *Node {
