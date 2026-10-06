@@ -30,6 +30,6 @@ curl -X PUT http://127.0.0.1:7001/kv/user -d alice
 curl -s http://127.0.0.1:7001/kv/user
 ```
 
-Slice 2 elects a leader among configured peers (`POST /raft/vote`). Two of three
-nodes are a majority. Writes wait for a majority `AppendEntries` before 200; one down follower still
-commits. See PLAN.md.
+Kill the leader and a majority elects a replacement: committed keys survive,
+followers proxy GET/PUT, and an uncommitted tail on the old leader is overwritten.
+See PLAN.md.

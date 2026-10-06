@@ -132,6 +132,14 @@ func (n *Node) handleKV(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "key required", http.StatusBadRequest)
 		return
 	}
+	n.mu.Lock()
+	role := n.role
+	leader := n.leaderID
+	n.mu.Unlock()
+	if role != RoleLeader {
+		n.proxyToLeader(w, r, leader)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		n.getKV(w, key)
@@ -159,14 +167,6 @@ func (n *Node) putKV(w http.ResponseWriter, r *http.Request, key string) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	n.mu.Lock()
-	if n.role != RoleLeader {
-		leader := n.leaderID
-		n.mu.Unlock()
-		http.Error(w, "not leader (leader="+leader+")", http.StatusServiceUnavailable)
-		return
-	}
-	n.mu.Unlock()
 	if err := n.Propose(key, string(body)); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
