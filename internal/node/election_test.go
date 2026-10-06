@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -68,6 +69,68 @@ func startRaftCluster(t *testing.T, configured, live int) *raftCluster {
 		c.srvs[n.ID()] = srv
 	}
 	return c
+}
+
+func (c *raftCluster) stopID(id string) {
+	for _, n := range c.nodes {
+		if n.ID() == id {
+			_ = n.Close()
+			break
+		}
+	}
+	if s := c.srvs[id]; s != nil {
+		_ = s.Close()
+	}
+	var rest []*Node
+	for _, n := range c.nodes {
+		if n.ID() != id {
+			rest = append(rest, n)
+		}
+	}
+	c.nodes = rest
+}
+
+func (c *raftCluster) restartID(t *testing.T, id string) *Node {
+	t.Helper()
+	n, err := Open(Config{
+		ID:                id,
+		DataDir:           c.dirs[id],
+		Peers:             copyStringMap(c.addrs),
+		ElectionTimeout:   40 * time.Millisecond,
+		HeartbeatInterval: 15 * time.Millisecond,
+		RPCTimeout:        50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", c.addrs[id])
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: n.Handler()}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = n.Close()
+		_ = srv.Close()
+		_ = ln.Close()
+	})
+	n.Start()
+	c.nodes = append(c.nodes, n)
+	c.srvs[id] = srv
+	return n
+}
+
+func httpPut(t *testing.T, addr, key, val string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, "http://"+addr+"/kv/"+key, strings.NewReader(val))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
 }
 
 func waitLeader(t *testing.T, nodes []*Node) *Node {
